@@ -1,0 +1,95 @@
+MODULE derp
+.LARGE
+.CODE
+    bc2
+    bra2 (?L1)
+    bra3 (?L1)
+    bra (?L1)
+
+    blt (?L1)
+    bpl (?L1)
+    bmi (?L1)
+    bne (?L1)
+    beq (?L1)
+    bcc (?L1)
+    bcs (?L1)
+
+    bcz (?L1)
+    bge (?L1)
+    bgt (?L1)
+    ble (?L1)
+
+    rti
+    rti
+    rti
+    rts
+    rts
+    rts
+    rts
+
+    brxl
+
+    asl #H'DEAD
+    asl #H'ffff
+    asl #H'ffad
+    asl #H'feff
+    asl #H'fead
+    lsl #H'dead
+    asr #H'DEAD
+    lsr #H'DEAD
+    or y, @(0,y)
+    or y, #H'FFAD
+    or y, #H'FEAD
+    or y, #H'AD
+    and x, #H'DEAD
+    and y, #H'DEAD
+    xor y, #H'DEAD
+    umult #H'DEAD
+    smult #H'DEAD
+    udiv #H'DEAD
+    sdiv #H'DEAD
+    tst #H'DEAD
+
+    rol #H'dead
+    ror #H'dead
+
+    st y, @(0,y)
+
+    nop
+    brk
+    sleep
+    sif
+    bc
+
+    print y, @(0,y)
+    print x, @(0,y)
+    print x, @(0,x)
+    print x, #15
+    print x, @H'1
+
+
+    enterl #1
+    enterl #H'f
+    enterl #H'10
+    enterl #H'80
+    enterl #H'100
+    enterl #H'dead
+    enterl #H'ff
+
+    enter #1
+    enter #H'f
+    enter #H'10
+    enter #H'80
+    enter #H'100
+    enter #H'dead
+    enter #H'ff
+
+    bcz (?L1)
+    bcz (?L1)
+    bcz (?L1)
+    bcz (?L1)
+?L1:
+    bcz (?L1)
+    bcz (?L1)
+    bcz (?L1)
+    bcz (?L1)
