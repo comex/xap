@@ -5,6 +5,9 @@ MODULE derp
     bra @H'BEEF
     bra @H'1
     bsr @H'1
+    bcz @H'1
+    bcz (?LX)
+?LX:
 
     and x, #H'DEAD
     and x, #H'DEADBE
@@ -116,3 +119,9 @@ MODULE derp
     ld ux, @(0,y)
     ld uy, @(0,y)
     ld xh, @(0,y)
+
+    tst @(0, y)
+    lsl @(0, y)
+
+    bra @(5,x)
+

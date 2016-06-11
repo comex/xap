@@ -48,12 +48,20 @@ class IndexedRef(namedtuple('IndexedRef', ['offset', 'reg'])):
     def repr(self):
         return '@(%s, %s)' % (Imm(self.offset).repr(), self.reg)
 
-class AddrRef(namedtuple('AddrRef', ['addr', 'is_code'])):
+class DataRef(namedtuple('DataRef', ['addr'])):
     def repr(self):
         name = reg_names.get(self.addr)
         if name is not None:
             return '@$' + name
         return "@H'%02x" % self.addr
+
+class CodeRef(namedtuple('CodeRef', ['addr'])):
+    def repr(self):
+        return "H'%02x" % self.addr
+
+class XPlus(namedtuple('XPlus', ['val'])):
+    def repr(self):
+        return "x+@H'%02x" % self.val # ???
 
 class Reg(namedtuple('Reg', ['reg'])):
     def repr(self):
@@ -72,15 +80,21 @@ def dis(opc, cur_addr, arg_ext=None, unsigned=False):
         arg = f_opnd | (0xff00 if (f_opnd & 0x80) else 0)
 
     def branch_target():
-        is_abs = bool(f_mode & 1)
-        return AddrRef(((0 if is_abs else cur_addr) + arg) & 0xffff, is_code=True)
+        if f_mode == 0:
+            return CodeRef(arg)
+        elif f_mode == 1:
+            return DataRef(arg)
+        elif f_mode == 2:
+            return XPlus(arg)
+        elif f_mode == 3:
+            return IndexedRef(arg, 'y')
     def data_op():
         if f_mode == 0:
             return Imm(arg)
         elif f_mode == 1:
-            return AddrRef(arg, is_code=False)
+            return DataRef(arg)
         elif f_mode == 2:
-            return IndexedRef(arg, 'x')
+            return XPlus(arg)
         elif f_mode == 3:
             return IndexedRef(arg, 'y')
     def reg_name():
@@ -123,7 +137,8 @@ def dis(opc, cur_addr, arg_ext=None, unsigned=False):
             return [mnem, Imm(arg)]
         elif f_right == 0xc and f_opnd == 0:
             return ['sif']
-        # 0xd missing
+        elif f_right == 0xd:
+            pass # ???
 
     elif f_opc in (1, 3, 4, 5, 6, 7, 8, 0xb, 0xc, 0xd):
         mnem = {1: 'ld', 2: 'st', 3: 'add', 4: 'addc', 5: 'sub',
@@ -131,37 +146,34 @@ def dis(opc, cur_addr, arg_ext=None, unsigned=False):
                 0xb: 'or', 0xc: 'and', 0xd: 'xor'}[f_opc]
         return [mnem, reg_name(), data_op()]
     elif f_opc == 2:
-        if f_mode & 2 == 0:
+        if f_mode == 0:
             return [('bgt', 'bge', 'blt', 'bcz')[f_reg], branch_target()]
         else:
             return ['st', reg_name(), data_op()]
     elif f_opc == 9:
-        if f_reg == 0 and f_mode == 0:
-            return ['umult' if unsigned else 'smult', Imm(arg)]
-        elif f_reg == 1 and f_mode == 0:
-            return ['udiv' if unsigned else 'sdiv', Imm(arg)]
-        elif f_reg == 2 and f_mode == 0:
-            return ['tst', Imm(arg)]
-        elif f_reg == 3 and f_mode & 2 == 0:
+        if f_reg == 0:
+            return ['umult' if unsigned else 'smult', data_op()]
+        elif f_reg == 1:
+            return ['udiv' if unsigned else 'sdiv', data_op()]
+        elif f_reg == 2:
+            return ['tst', data_op()]
+        elif f_reg == 3:
             return ['bsr', branch_target()]
     elif f_opc == 0xa:
-        if f_mode == 0:
-            if f_reg == 0:
-                return ['lsl' if unsigned else 'asl', Imm(arg)]
-            elif f_reg == 1:
-                return ['lsr' if unsigned else 'asr', Imm(arg)]
-            elif f_reg == 2:
-                return ['rol', Imm(arg)]
-            elif f_reg == 3:
-                return ['ror', Imm(arg)]
+        if f_reg == 0:
+            return ['lsl' if unsigned else 'asl', data_op()]
+        elif f_reg == 1:
+            return ['lsr' if unsigned else 'asr', data_op()]
+        elif f_reg == 2:
+            return ['rol', data_op()]
+        elif f_reg == 3:
+            return ['ror', data_op()]
     elif f_opc == 0xe:
         if f_right == 2 and f_opnd == 0:
             return ['rts']
-        if f_mode & 2 == 0:
-            return [('bra', 'blt', 'bpl', 'bmi')[f_reg], branch_target()]
+        return [('bra', 'blt', 'bpl', 'bmi')[f_reg], branch_target()]
     elif f_opc == 0xf:
-        if f_mode & 2 == 0:
-            return [('bne', 'beq', 'bcc', 'bcs')[f_reg], branch_target()]
+        return [('bne', 'beq', 'bcc', 'bcs')[f_reg], branch_target()]
     return ['UNK! %04x' % opc]
 
 class DisassemblerState:
