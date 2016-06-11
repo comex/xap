@@ -1,6 +1,11 @@
 MODULE derp
 .LARGE
 .CODE
+    bra @H'DEADBEEF
+    bra @H'BEEF
+    bra @H'1
+    bsr @H'1
+
     and x, #H'DEAD
     and x, #H'DEADBE
     and x, #H'DEADBEEF
@@ -93,8 +98,21 @@ MODULE derp
     bcz (?L1)
     bcz (?L1)
     bcz (?L1)
+    bsr (?L1)
+    bsr (?L1)
+    bsr (?L1)
 ?L1:
     bcz (?L1)
     bcz (?L1)
     bcz (?L1)
     bcz (?L1)
+
+
+    st flags, @(0,y)
+    st ux, @(0,y)
+    st uy, @(0,y)
+    st xh, @(0,y)
+    ld flags, @(0,y)
+    ld ux, @(0,y)
+    ld uy, @(0,y)
+    ld xh, @(0,y)

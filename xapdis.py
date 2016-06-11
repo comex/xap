@@ -1,6 +1,38 @@
 import sys, re
 from collections import namedtuple
 
+# https://github.com/lorf/csrremote/blob/master/bc_def.h
+# weirdly, their gcc sometimes generates assembly that defines UXL as ffe2
+reg_names = {
+    0xFF7D: 'ANA_VERSION_ID',
+    0xFF7E: 'ANA_CONFIG2',
+    0xFF82: 'ANA_LO_FREQ',
+    0xFF83: 'ANA_LO_FTRIM',
+    0xFF91: 'GBL_RST_ENABLES',
+    0xFF94: 'GBL_TIMER_ENABLES',
+    0xFF97: 'GBL_MISC_ENABLES',
+    0xFF52: 'GBL_MISC2_ENABLES',
+    0xFF9A: 'GBL_CHIP_VERSION',
+    0xFFDE: 'GBL_CLK_RATE',
+    0xFFB9: 'TIMER_SLOW_TIMER_PERIOD',
+    0xFFE0: 'XAP_AH',
+    0xFFE1: 'XAP_AL',
+    0xFFE2: 'XAP_UXH',
+    0xFFE3: 'XAP_UXL',
+    0xFFE4: 'XAP_UY',
+    0xFFE5: 'XAP_IXH',
+    0xFFE6: 'XAP_IXL',
+    0xFFE7: 'XAP_IY',
+    0xFFE8: 'XAP_FLAGS',
+    0xFFE9: 'XAP_PCH',
+    0xFFEA: 'XAP_PCL',
+    0xFFEB: 'XAP_BRK_REGH',
+    0xFFEC: 'XAP_BRK_REGL',
+    0xFFED: 'XAP_RSVD_13',
+    0xFFEE: 'XAP_RSVD_14',
+    0xFFEF: 'XAP_RSVD_15',
+}
+
 class Imm(namedtuple('Imm', ['val', 'force_2x'])):
     def __new__(cls, val, force_2x=False):
         return super(Imm, cls).__new__(cls, val, force_2x)
@@ -18,6 +50,9 @@ class IndexedRef(namedtuple('IndexedRef', ['offset', 'reg'])):
 
 class AddrRef(namedtuple('AddrRef', ['addr', 'is_code'])):
     def repr(self):
+        name = reg_names.get(self.addr)
+        if name is not None:
+            return '@$' + name
         return "@H'%02x" % self.addr
 
 class Reg(namedtuple('Reg', ['reg'])):
@@ -37,7 +72,8 @@ def dis(opc, cur_addr, arg_ext=None, unsigned=False):
         arg = f_opnd | (0xff00 if (f_opnd & 0x80) else 0)
 
     def branch_target():
-        return AddrRef((cur_addr + arg) & 0xffff, is_code=True)
+        is_abs = bool(f_mode & 1)
+        return AddrRef(((0 if is_abs else cur_addr) + arg) & 0xffff, is_code=True)
     def data_op():
         if f_mode == 0:
             return Imm(arg)
@@ -50,17 +86,20 @@ def dis(opc, cur_addr, arg_ext=None, unsigned=False):
     def reg_name():
         return Reg(('ah', 'al', 'x', 'y')[f_reg])
 
+    loads = {1: 'flags', 2: 'ux', 3: 'uy', 0xe: 'xh'}
+    stores = {5: 'flags', 6: 'ux', 7: 'uy', 0xa: 'xh'}
+
     if f_opc == 0:
         if opc == 0x0000:
             return ['nop']
         elif f_right == 0:
             return ['prefix', Imm(f_opnd - 1, force_2x=True)]
-        elif f_right == 1:
-            return ['st', Reg('flags'), data_op()]
+        elif f_right in stores:
+            return ['st', Reg(stores[f_right]), IndexedRef(arg, 'y')]
+        elif f_right in loads:
+            return ['ld', Reg(loads[f_right]), IndexedRef(arg, 'y')]
         elif f_right == 4 and f_opnd == 0:
             return ['brk']
-        elif f_right == 5:
-            return ['ld', Reg('flags'), data_op()]
         elif f_right == 8 and f_opnd == 0:
             return ['sleep']
         elif f_right == 9:
@@ -84,39 +123,44 @@ def dis(opc, cur_addr, arg_ext=None, unsigned=False):
             return [mnem, Imm(arg)]
         elif f_right == 0xc and f_opnd == 0:
             return ['sif']
+        # 0xd missing
+
     elif f_opc in (1, 3, 4, 5, 6, 7, 8, 0xb, 0xc, 0xd):
         mnem = {1: 'ld', 2: 'st', 3: 'add', 4: 'addc', 5: 'sub',
                 6: 'subc', 7: 'nadd', 8: 'cmp',
                 0xb: 'or', 0xc: 'and', 0xd: 'xor'}[f_opc]
         return [mnem, reg_name(), data_op()]
     elif f_opc == 2:
-        if f_mode == 0:
+        if f_mode & 2 == 0:
             return [('bgt', 'bge', 'blt', 'bcz')[f_reg], branch_target()]
         else:
             return ['st', reg_name(), data_op()]
     elif f_opc == 9:
-        if f_reg == 0:
+        if f_reg == 0 and f_mode == 0:
             return ['umult' if unsigned else 'smult', Imm(arg)]
-        elif f_reg == 1:
+        elif f_reg == 1 and f_mode == 0:
             return ['udiv' if unsigned else 'sdiv', Imm(arg)]
-        elif f_reg == 2:
+        elif f_reg == 2 and f_mode == 0:
             return ['tst', Imm(arg)]
+        elif f_reg == 3 and f_mode & 2 == 0:
+            return ['bsr', branch_target()]
     elif f_opc == 0xa:
-        if f_reg == 0:
-            return ['lsl' if unsigned else 'asl', Imm(arg)]
-        elif f_reg == 1:
-            return ['lsr' if unsigned else 'asr', Imm(arg)]
-        elif f_reg == 2:
-            return ['rol', Imm(arg)]
-        elif f_reg == 3:
-            return ['ror', Imm(arg)]
+        if f_mode == 0:
+            if f_reg == 0:
+                return ['lsl' if unsigned else 'asl', Imm(arg)]
+            elif f_reg == 1:
+                return ['lsr' if unsigned else 'asr', Imm(arg)]
+            elif f_reg == 2:
+                return ['rol', Imm(arg)]
+            elif f_reg == 3:
+                return ['ror', Imm(arg)]
     elif f_opc == 0xe:
         if f_right == 2 and f_opnd == 0:
             return ['rts']
-        if f_mode == 0:
+        if f_mode & 2 == 0:
             return [('bra', 'blt', 'bpl', 'bmi')[f_reg], branch_target()]
     elif f_opc == 0xf:
-        if f_mode == 0:
+        if f_mode & 2 == 0:
             return [('bne', 'beq', 'bcc', 'bcs')[f_reg], branch_target()]
     return ['UNK! %04x' % opc]
 
@@ -129,9 +173,9 @@ class DisassemblerState:
     def dis(self, opc, cur_addr):
         if opc & 0xff == 0 and opc != 0:
             insn = None
-            if self.arg_ext is not None:
+            if self.arg_ext is not None and self.arg_ext != 0:
                 insn = (self.arg_ext_addr, ['redundant_prefix', Imm(self.arg_ext, force_2x=True)])
-            self.arg_ext = opc >> 8
+            self.arg_ext = (opc >> 8) - 1
             self.arg_ext_addr = cur_addr
             return insn
         elif opc == 0x0009:
