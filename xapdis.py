@@ -61,7 +61,7 @@ class CodeRef(namedtuple('CodeRef', ['addr'])):
 
 class XPlus(namedtuple('XPlus', ['offset'])):
     def repr(self):
-        return "x+@H'%02x" % self.val # ???
+        return "x+@H'%02x" % self.offset # ???
 
 class Reg(namedtuple('Reg', ['reg'])):
     def repr(self):
@@ -87,7 +87,7 @@ def dis(opc, cur_addr, arg_ext=0, arg_ext_len=0, unsigned=False):
 
     def branch_target():
         if f_mode == 0:
-            return CodeRef(arg24())
+            return CodeRef((cur_addr + arg24()) & 0xffffff)
         elif f_mode == 1:
             return DataRef(arg16())
         elif f_mode == 2:
@@ -100,14 +100,14 @@ def dis(opc, cur_addr, arg_ext=0, arg_ext_len=0, unsigned=False):
         elif f_mode == 1:
             return DataRef(arg16())
         elif f_mode == 2:
-            return IndexedRef(arg16), 'x')
+            return IndexedRef(arg16(), 'x')
         elif f_mode == 3:
-            return IndexedRef(arg16), 'y')
+            return IndexedRef(arg16(), 'y')
     def reg_name():
         return Reg(('ah', 'al', 'x', 'y')[f_reg])
 
-    loads = {1: 'flags', 2: 'ux', 3: 'uy', 0xe: 'xh'}
-    stores = {5: 'flags', 6: 'ux', 7: 'uy', 0xa: 'xh'}
+    loads = {5: 'flags', 6: 'ux', 7: 'uy', 0xe: 'xh'}
+    stores = {1: 'flags', 2: 'ux', 3: 'uy', 0xa: 'xh'}
 
     if f_opc == 0:
         if opc == 0x0000:
@@ -140,8 +140,8 @@ def dis(opc, cur_addr, arg_ext=0, arg_ext_len=0, unsigned=False):
             xarg = arg16()
             if xarg >= 0x8000:
                 mnem += 'l'
-                xarg = 0x10000 - arg
-            return [mnem, Imm(arg)]
+                xarg = 0x10000 - xarg
+            return [mnem, Imm(xarg)]
         elif f_right == 0xc and f_opnd == 0:
             return ['sif']
         elif f_right == 0xd:
@@ -222,6 +222,7 @@ def dis_to_string(insn):
 
 if __name__ == '__main__':
     cur_addr = 0
+    next_disp_addr = 0
     ds = DisassemblerState()
     fp = open(sys.argv[1]) if len(sys.argv) > 1 else sys.stdin
     for line in fp:
@@ -237,4 +238,5 @@ if __name__ == '__main__':
         info = ds.dis(val, addr)
         if info is not None:
             addr, insn = info
-            print 'addr:%04x insn:%04x %s' % (addr, val, dis_to_string(insn))
+            print 'addr:%04x insn:%04x %s' % (next_disp_addr, val, dis_to_string(insn))
+            next_disp_addr = addr + 1
