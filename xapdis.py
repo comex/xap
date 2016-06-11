@@ -59,7 +59,7 @@ class CodeRef(namedtuple('CodeRef', ['addr'])):
     def repr(self):
         return "H'%02x" % self.addr
 
-class XPlus(namedtuple('XPlus', ['val'])):
+class XPlus(namedtuple('XPlus', ['offset'])):
     def repr(self):
         return "x+@H'%02x" % self.val # ???
 
@@ -67,36 +67,42 @@ class Reg(namedtuple('Reg', ['reg'])):
     def repr(self):
         return self.reg
 
-def dis(opc, cur_addr, arg_ext=None, unsigned=False):
+def dis(opc, cur_addr, arg_ext=0, arg_ext_len=0, unsigned=False):
     assert 0 <= opc <= 0xffff
     f_opnd = opc >> 8
     f_opc = (opc >> 4) & 0xf
     f_right = opc & 0xf
     f_reg = (opc >> 2) & 3
     f_mode = opc & 3
-    if arg_ext is not None:
-        arg = (arg_ext << 8) | f_opnd
-    else:
-        arg = f_opnd | (0xff00 if (f_opnd & 0x80) else 0)
+    arg = (arg_ext << 8) | f_opnd
+    arg_len = arg_ext_len + 8
+    # sign extend to infinity
+    if arg & (1 << (arg_len - 1)):
+        arg -= (1 << arg_len)
+    def arg16():
+        # xxx should output if it's too long
+        return arg & 0xffff
+    def arg24():
+        return arg & 0xffffff
 
     def branch_target():
         if f_mode == 0:
-            return CodeRef(arg)
+            return CodeRef(arg24())
         elif f_mode == 1:
-            return DataRef(arg)
+            return DataRef(arg16())
         elif f_mode == 2:
-            return XPlus(arg)
+            return XPlus(arg24())
         elif f_mode == 3:
-            return IndexedRef(arg, 'y')
+            return IndexedRef(arg16(), 'y')
     def data_op():
         if f_mode == 0:
-            return Imm(arg)
+            return Imm(arg16())
         elif f_mode == 1:
-            return DataRef(arg)
+            return DataRef(arg16())
         elif f_mode == 2:
-            return XPlus(arg)
+            return IndexedRef(arg16), 'x')
         elif f_mode == 3:
-            return IndexedRef(arg, 'y')
+            return IndexedRef(arg16), 'y')
     def reg_name():
         return Reg(('ah', 'al', 'x', 'y')[f_reg])
 
@@ -109,9 +115,9 @@ def dis(opc, cur_addr, arg_ext=None, unsigned=False):
         elif f_right == 0:
             return ['prefix', Imm(f_opnd - 1, force_2x=True)]
         elif f_right in stores:
-            return ['st', Reg(stores[f_right]), IndexedRef(arg, 'y')]
+            return ['st', Reg(stores[f_right]), IndexedRef(arg16(), 'y')]
         elif f_right in loads:
-            return ['ld', Reg(loads[f_right]), IndexedRef(arg, 'y')]
+            return ['ld', Reg(loads[f_right]), IndexedRef(arg16(), 'y')]
         elif f_right == 4 and f_opnd == 0:
             return ['brk']
         elif f_right == 8 and f_opnd == 0:
@@ -131,9 +137,10 @@ def dis(opc, cur_addr, arg_ext=None, unsigned=False):
                 return ['bc']
         elif f_right in (0xb, 0xf):
             mnem = 'enter' if f_right == 0xb else 'leave'
-            if arg >= 0x8000:
+            xarg = arg16()
+            if xarg >= 0x8000:
                 mnem += 'l'
-                arg = 0x10000 - arg
+                xarg = 0x10000 - arg
             return [mnem, Imm(arg)]
         elif f_right == 0xc and f_opnd == 0:
             return ['sif']
@@ -147,7 +154,7 @@ def dis(opc, cur_addr, arg_ext=None, unsigned=False):
         return [mnem, reg_name(), data_op()]
     elif f_opc == 2:
         if f_mode == 0:
-            return [('bgt', 'bge', 'blt', 'bcz')[f_reg], branch_target()]
+            return [('bgt', 'bge', 'ble', 'bcz')[f_reg], branch_target()]
         else:
             return ['st', reg_name(), data_op()]
     elif f_opc == 9:
@@ -181,24 +188,29 @@ class DisassemblerState:
         self.reset()
     def reset(self):
         self.unsigned = False
-        self.arg_ext = None
+        self.arg_ext = 0
+        self.arg_ext_len = 0
+        self.arg_ext_addrs = []
     def dis(self, opc, cur_addr):
         if opc & 0xff == 0 and opc != 0:
-            insn = None
-            if self.arg_ext is not None and self.arg_ext != 0:
-                insn = (self.arg_ext_addr, ['redundant_prefix', Imm(self.arg_ext, force_2x=True)])
-            self.arg_ext = (opc >> 8) - 1
-            self.arg_ext_addr = cur_addr
-            return insn
+            insn_info = None
+            if self.arg_ext_len > 16:
+                insn_info = (self.arg_ext_addrs.pop(0), ['redundant_prefix', Imm(self.arg_ext, force_2x=True)])
+                self.arg_ext &= 0xff
+                self.arg_ext_len = 8
+            self.arg_ext = (self.arg_ext << 8) | ((opc >> 8) - 1)
+            self.arg_ext_len += 8
+            self.arg_ext_addrs.append(cur_addr)
+            return insn_info
         elif opc == 0x0009:
-            insn = None
+            insn_info = None
             if self.unsigned:
-                insn = (self.unsigned_addr, ['redundant_unsigned'])
+                insn_info = (self.unsigned_addr, ['redundant_unsigned'])
             self.unsigned = True
             self.unsigned_addr = cur_addr
-            return insn
+            return insn_info
         else:
-            insn = dis(opc, cur_addr, self.arg_ext, self.unsigned)
+            insn = dis(opc, cur_addr, self.arg_ext, self.arg_ext_len, self.unsigned)
             self.reset()
             return (cur_addr, insn)
 
