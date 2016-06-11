@@ -1,6 +1,11 @@
 MODULE derp
 .LARGE
 .CODE
+    and x, #H'DEAD
+    and x, #H'DEADBE
+    and x, #H'DEADBEEF
+    and x, #H'DEADBEEFEF
+
     bc2
     bra2 (?L1)
     bra3 (?L1)
