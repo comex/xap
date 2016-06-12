@@ -67,18 +67,18 @@ class Reg(namedtuple('Reg', ['reg'])):
     def repr(self):
         return self.reg
 
-def dis(opc, cur_addr, arg_ext=0, arg_ext_len=0, unsigned=False):
+def sext8(val):
+    assert 0 <= val <= 0xff
+    return val if val <= 0x7f else (val - 0x100)
+
+def dis(opc, cur_addr, arg_ext=0, unsigned=False):
     assert 0 <= opc <= 0xffff
     f_opnd = opc >> 8
     f_opc = (opc >> 4) & 0xf
     f_right = opc & 0xf
     f_reg = (opc >> 2) & 3
     f_mode = opc & 3
-    arg = (arg_ext << 8) | f_opnd
-    arg_len = arg_ext_len + 8
-    # sign extend to infinity
-    if arg & (1 << (arg_len - 1)):
-        arg -= (1 << arg_len)
+    arg = (arg_ext << 8) + sext8(f_opnd)
     def arg16():
         # xxx should output if it's too long
         return arg & 0xffff
@@ -194,11 +194,11 @@ class DisassemblerState:
     def dis(self, opc, cur_addr):
         if opc & 0xff == 0 and opc != 0:
             insn_info = None
-            if self.arg_ext_len > 16:
+            if self.arg_ext_len >= 16:
                 insn_info = (self.arg_ext_addrs.pop(0), ['redundant_prefix', Imm(self.arg_ext, force_2x=True)])
                 self.arg_ext &= 0xff
                 self.arg_ext_len = 8
-            self.arg_ext = (self.arg_ext << 8) | ((opc >> 8) - 1)
+            self.arg_ext = (self.arg_ext << 8) + sext8(opc >> 8)
             self.arg_ext_len += 8
             self.arg_ext_addrs.append(cur_addr)
             return insn_info
@@ -210,12 +210,12 @@ class DisassemblerState:
             self.unsigned_addr = cur_addr
             return insn_info
         else:
-            insn = dis(opc, cur_addr, self.arg_ext, self.arg_ext_len, self.unsigned)
+            insn = dis(opc, cur_addr, self.arg_ext, self.unsigned)
             self.reset()
             return (cur_addr, insn)
 
 def dis_to_string(insn):
-    if len(insn) == 1:
+    if len(insn) == 0:
         return 'UNK!'
     elif len(insn) == 1:
         return insn[0]
@@ -223,7 +223,7 @@ def dis_to_string(insn):
         return insn[0] + ' ' + ', '.join(arg.repr() for arg in insn[1:])
 
 if __name__ == '__main__':
-    cur_addr = 0
+    cur_addr = None
     next_disp_addr = 0
     ds = DisassemblerState()
     fp = open(sys.argv[1]) if len(sys.argv) > 1 else sys.stdin
@@ -234,6 +234,8 @@ if __name__ == '__main__':
         m = re.match('^@([0-9a-fA-F]+)\s+([0-9a-fA-F]{4})$', line)
         assert m
         addr, val = [int(x, 16) for x in m.groups()]
+        if cur_addr is None:
+            cur_addr = addr
         assert addr == cur_addr
         cur_addr += 1
 

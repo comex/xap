@@ -80,6 +80,7 @@ def load_file(li, neflags, format):
             seg.sel = kind + 1
             name = '%s_%x' % (segname, addr)
             klass = segname.upper()
+            #print '%s from %x to %x' % (name, seg.startEA, seg.endEA)
             if not idaapi.add_segm_ex(seg, name, klass, 0):
                 raise Exception("couldn't add segment %s" % (name,))
             if segname == 'code':
@@ -93,7 +94,7 @@ def load_file(li, neflags, format):
             spaces = zip([0] + [addr+len(chunk) for (addr, chunk) in info['chunks']],
                          [addr for (addr, chunk) in info['chunks']] + [0x10000])
             for start, end in spaces:
-                if end == start:
+                if end - start < 0x10:
                     continue
                 assert end > start
                 seg = idaapi.segment_t()
@@ -101,8 +102,8 @@ def load_file(li, neflags, format):
                 seg.endEA = base_addr + end
                 seg.bitness = 1
                 seg.sel = kind + 1
-                name = 'bss_%x' % (addr,)
-                print hex(start), hex(end)
+                name = 'bss_%x' % (start,)
+                #print '%s from %x to %x' % (name, seg.startEA, seg.endEA)
                 if not idaapi.add_segm_ex(seg, name, 'BSS', idaapi.ADDSEG_SPARSE):
                     raise Exception("couldn't add segment %s" % (name,))
     return 1
