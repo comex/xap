@@ -1,27 +1,31 @@
 import idaapi, re
 def accept_file(li, n):
     if n > 0:
-        return False
+        return 0
     li.seek(0)
     if li.read(3) != '// ':
-        return False
+        return 0
     li.seek(0)
     magic = li.read(512)
-    return bool(re.search('Title +: "(Code|Constant|Symbol) Table"', magic))
+    if not re.search('Title +: "(Code|Constant|Symbol) Table"', magic):
+        return 0
+    return 'XAP2 text format'
 def load_file(li, neflags, format):
-    idaapi.set_processor_type('xap2csr', SETPROC_ALL|SETPROC_FATAL))
+    idaapi.set_processor_type('xap2csr', idaapi.SETPROC_ALL | idaapi.SETPROC_FATAL)
     li.seek(0)
-    lines = li.read().split('\n')
+    lines = li.read(li.size()).split('\n')
     segs = {}
     for seg in ('code', 'data'):
         segs[seg] = {'chunks': [], 'syms': []}
     def handle_line(line):
         raise ValueError('got non-commented line before title: %r' % (line,))
     for line in lines:
-        line = line.rstrip()
+        #print repr(line)
+        line = line.strip()
         if not line:
             continue
         if not line.startswith('// '):
+            line = re.sub('\s*//.*', '', line)
             handle_line(line)
             continue
         m = re.match('^// Title +: "(Code|Constant|Symbol) Table"', line)
@@ -35,7 +39,7 @@ def load_file(li, neflags, format):
             cur_addr_box = [None]
             cur_chunk_box = [None]
             def handle_line(line):
-                m = re.match('^@([0-9A-Fa-f]+)\s+([0-9A-Fa-f]{2})*$', line)
+                m = re.match('^@([0-9A-Fa-f]+)\s+([0-9A-Fa-f]{4})$', line)
                 if not m:
                     raise ValueError('unrecognized seg line: %r' % (line,))
                 addr, word = [int(x, 16) for x in m.groups()]
@@ -61,45 +65,43 @@ def load_file(li, neflags, format):
                     if cur_syms is None:
                         raise ValueError('symbols without a segment: %r' % (line,))
                     cur_syms.append((int(m.group(2), 16), m.group(1))) # (addr, name)
-    for (seg, info) in segs.iteritems():
-        kind = {'code': 0, 'data': 1}[seg]
+    for (segname, info) in segs.iteritems():
+        kind = {'code': 0, 'data': 1}[segname]
         base_addr = (0, 0x1000000)[kind]
-        if info['chunks'] == [] and info['syms'] == []:
+        if segname == 'code' and info['chunks'] == [] and info['syms'] == []:
             continue
-        if not idaapi.set_selector(kind, base_addr >> 4)
+        if not idaapi.set_selector(kind + 1, base_addr >> 4):
             raise Exception("couldn't set selector for segment %s" % (name,))
         for addr, chunk in info['chunks']:
             seg = idaapi.segment_t()
             seg.startEA = base_addr + addr
             seg.endEA = base_addr + addr + len(chunk)
             seg.bitness = 1 # 32-bit (we can have more than 16 bits of code, so just use for both)
-            seg.sel = kind
-            name = '%s_%x' % (seg, addr)
-            klass = seg.upper()
+            seg.sel = kind + 1
+            name = '%s_%x' % (segname, addr)
+            klass = segname.upper()
             if not idaapi.add_segm_ex(seg, name, klass, 0):
                 raise Exception("couldn't add segment %s" % (name,))
-            if seg == 'code':
+            if segname == 'code':
                 idaapi.autoMark(seg.startEA, AU_CODE)
             ea = seg.startEA
             for word in chunk:
-                put_byte(ea, chunk)
+                idaapi.put_byte(ea, word)
                 ea += 1
-        if seg == 'data':
+        if segname == 'data':
             # fill in the remaining area with BSS
-            spaces = zip((addr+len(chunk) for (addr, chunk) in info['chunks']),
+            spaces = zip([0] + [addr+len(chunk) for (addr, chunk) in info['chunks']],
                          [addr for (addr, chunk) in info['chunks']][1:] + [0x10000])
             for start, end in spaces:
                 if end == start:
                     continue
                 assert end > start
                 seg = idaapi.segment_t()
-                seg.startEA = start
-                seg.endEA = end
+                seg.startEA = base_addr + start
+                seg.endEA = base_addr + end
                 seg.bitness = 1
-                seg.sel = kind
-                name = 'bss_%x' % (seg, addr)
+                seg.sel = kind + 1
+                name = 'bss_%x' % (addr,)
                 if not idaapi.add_segm_ex(seg, name, 'BSS', idaapi.ADDSEG_SPARSE):
                     raise Exception("couldn't add segment %s" % (name,))
-
-
-
+    return 1

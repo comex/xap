@@ -181,7 +181,7 @@ def dis(opc, cur_addr, arg_ext=0, arg_ext_len=0, unsigned=False):
         return [('bra', 'blt', 'bpl', 'bmi')[f_reg], branch_target()]
     elif f_opc == 0xf:
         return [('bne', 'beq', 'bcc', 'bcs')[f_reg], branch_target()]
-    return ['UNK! %04x' % opc]
+    return []
 
 class DisassemblerState:
     def __init__(self):
@@ -215,7 +215,9 @@ class DisassemblerState:
             return (cur_addr, insn)
 
 def dis_to_string(insn):
-    if len(insn) <= 1:
+    if len(insn) == 1:
+        return 'UNK!'
+    elif len(insn) == 1:
         return insn[0]
     else:
         return insn[0] + ' ' + ', '.join(arg.repr() for arg in insn[1:])

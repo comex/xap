@@ -1,6 +1,12 @@
 MODULE derp
 .LARGE
 .CODE
+    enter #4
+    ld x, @(1,Y)
+    st x, @(1,Y)
+    leave #4
+
+
     bra @H'DEADBEEF
     bra @H'BEEF
     bra @H'1
