@@ -1,27 +1,32 @@
 # so much boilerplate, argh
 
 import xapdis
+reload(xapdis) # IDA reloads this script but not its dependents
 import idaapi
 from idaapi import *
 
 def get_idp_desc():
     return 'XAP2 (CSR):xap2csr'
 
-reg_names = ['ah', 'al', 'x', 'y', 'ux', 'uy', 'xh', 'flags']
+reg_names = ['ah', 'al', 'x', 'y', 'ux', 'uy', 'xh', 'flags',
+             'uxh', 'uxl', 'uy', 'ixh', 'ixl', 'iy',
+             'pch', 'pcl', 'fake_code_sreg', 'fake_data_sreg']
 reg_nums = {x: i for (i, x) in enumerate(reg_names)}
 REG_Y = reg_nums['y']
+
 insns = [
-    {'name': 'rts',   'feature': CF_STOP},
-    {'name': 'brxl',  'feature': CF_STOP},
+    {'name': 'rts',    'feature': CF_STOP},
+    {'name': 'brxl',   'feature': CF_STOP},
 
-    {'name': 'bra',  'feature': CF_USE1 | CF_STOP | CF_JUMP},
-    {'name': 'bsr',  'feature': CF_USE1 | CF_CALL | CF_JUMP},
+    {'name': 'bra',    'feature': CF_USE1 | CF_STOP | CF_JUMP},
+    {'name': 'bsr',    'feature': CF_USE1 | CF_CALL | CF_JUMP},
 
-    {'name': 'st',   'feature': CF_USE1 | CF_USE2},
-    {'name': 'ld',   'feature': CF_CHG1 | CF_USE2},
+    {'name': 'st',     'feature': CF_USE1 | CF_CHG2},
+    {'name': 'ld',     'feature': CF_CHG1 | CF_USE2},
+    {'name': 'mov.s',  'feature': CF_CHG1 | CF_USE2},
 
-    {'name': 'cmp',  'feature': CF_USE1 | CF_USE2},
-    {'name': 'print','feature': CF_USE1 | CF_USE2},
+    {'name': 'cmp',    'feature': CF_USE1 | CF_USE2},
+    {'name': 'print',  'feature': CF_USE1 | CF_USE2},
 
     {'name': 'enter',  'feature': CF_USE1},
     {'name': 'enterl', 'feature': CF_USE1},
@@ -50,11 +55,11 @@ class my_processor_t(idaapi.processor_t):
     psnames = ['xap2csr']
     plnames = ['XAP2 (CSR)']
     regNames = reg_names
-    regFirstSreg = 16
-    regLastSreg = 17
+    regCodeSreg = reg_nums['fake_code_sreg']
+    regDataSreg = reg_nums['fake_data_sreg']
+    regFirstSreg = regCodeSreg
+    regLastSreg = regDataSreg
     segreg_size = 0
-    regCodeSreg = 16
-    regDataSreg = 17
     codestart = []
     retcodes = []
     instruc = insns
@@ -198,6 +203,8 @@ class my_processor_t(idaapi.processor_t):
                 doImmd(cmd.ea)
                 if op_adds_xrefs(uFlag, op.n):
                     ua_add_off_drefs2(op, dr_O, 0)
+                if feat & CF_SHFT:
+                    op_dec(cmd.ea, op.n)
             elif op.type == o_displ:
                 doImmd(cmd.ea)
                 #if op_adds_xrefs(uFlag, op.n):

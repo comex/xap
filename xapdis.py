@@ -3,7 +3,7 @@ from collections import namedtuple
 
 # https://github.com/lorf/csrremote/blob/master/bc_def.h
 # weirdly, their gcc sometimes generates assembly that defines UXL as ffe2
-reg_names = {
+mreg_names = {
     0xFF7D: 'ANA_VERSION_ID',
     0xFF7E: 'ANA_CONFIG2',
     0xFF82: 'ANA_LO_FREQ',
@@ -15,22 +15,25 @@ reg_names = {
     0xFF9A: 'GBL_CHIP_VERSION',
     0xFFDE: 'GBL_CLK_RATE',
     0xFFB9: 'TIMER_SLOW_TIMER_PERIOD',
-    0xFFE0: 'XAP_AH',
-    0xFFE1: 'XAP_AL',
-    0xFFE2: 'XAP_UXH',
-    0xFFE3: 'XAP_UXL',
-    0xFFE4: 'XAP_UY',
-    0xFFE5: 'XAP_IXH',
-    0xFFE6: 'XAP_IXL',
-    0xFFE7: 'XAP_IY',
-    0xFFE8: 'XAP_FLAGS',
-    0xFFE9: 'XAP_PCH',
-    0xFFEA: 'XAP_PCL',
     0xFFEB: 'XAP_BRK_REGH',
     0xFFEC: 'XAP_BRK_REGL',
     0xFFED: 'XAP_RSVD_13',
     0xFFEE: 'XAP_RSVD_14',
     0xFFEF: 'XAP_RSVD_15',
+}
+
+reg_addrs = {
+    0xFFE0: 'ah',
+    0xFFE1: 'al',
+    0xFFE2: 'uxh',
+    0xFFE3: 'uxl',
+    0xFFE4: 'uy',
+    0xFFE5: 'ixh',
+    0xFFE6: 'ixl',
+    0xFFE7: 'iy',
+    0xFFE8: 'flags',
+    0xFFE9: 'pch',
+    0xFFEA: 'pcl',
 }
 
 class Imm(namedtuple('Imm', ['val', 'force_2x'])):
@@ -50,7 +53,7 @@ class IndexedRef(namedtuple('IndexedRef', ['offset', 'reg'])):
 
 class DataRef(namedtuple('DataRef', ['addr'])):
     def repr(self):
-        name = reg_names.get(self.addr)
+        name = mreg_names.get(self.addr)
         if name is not None:
             return '@$' + name
         return "@H'%02x" % self.addr
@@ -71,7 +74,7 @@ def sext8(val):
     assert 0 <= val <= 0xff
     return val if val <= 0x7f else (val - 0x100)
 
-def dis(opc, cur_addr, arg_ext=0, unsigned=False):
+def dis(opc, cur_addr, arg_ext=0, unsigned=False, use_pseudo=True):
     assert 0 <= opc <= 0xffff
     f_opnd = opc >> 8
     f_opc = (opc >> 4) & 0xf
@@ -98,7 +101,10 @@ def dis(opc, cur_addr, arg_ext=0, unsigned=False):
         if f_mode == 0:
             return Imm(arg16())
         elif f_mode == 1:
-            return DataRef(arg16())
+            addr = arg16()
+            if use_pseudo and addr in reg_addrs:
+                return Reg(reg_addrs[addr])
+            return DataRef(addr)
         elif f_mode == 2:
             return IndexedRef(arg16(), 'x')
         elif f_mode == 3:
@@ -148,7 +154,7 @@ def dis(opc, cur_addr, arg_ext=0, unsigned=False):
             pass # ???
 
     elif f_opc in (1, 3, 4, 5, 6, 7, 8, 0xb, 0xc, 0xd):
-        mnem = {1: 'ld', 2: 'st', 3: 'add', 4: 'addc', 5: 'sub',
+        mnem = {1: 'ld', 3: 'add', 4: 'addc', 5: 'sub',
                 6: 'subc', 7: 'nadd', 8: 'cmp',
                 0xb: 'or', 0xc: 'and', 0xd: 'xor'}[f_opc]
         return [mnem, reg_name(), data_op()]
@@ -156,7 +162,10 @@ def dis(opc, cur_addr, arg_ext=0, unsigned=False):
         if f_mode == 0:
             return [('bgt', 'bge', 'ble', 'bcz')[f_reg], branch_target()]
         else:
-            return ['st', reg_name(), data_op()]
+            x = ['st', reg_name(), data_op()]
+            if isinstance(x[2], Reg):
+                x = ['mov.s', x[2], x[1]]
+            return x
     elif f_opc == 9:
         if f_reg == 0:
             return ['umult' if unsigned else 'smult', data_op()]

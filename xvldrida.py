@@ -81,14 +81,14 @@ def load_file(li, neflags, format):
             name = '%s_%x' % (segname, addr)
             klass = segname.upper()
             #print '%s from %x to %x' % (name, seg.startEA, seg.endEA)
-            if not idaapi.add_segm_ex(seg, name, klass, 0):
+            if not idaapi.add_segm_ex(seg, name, klass, ADDSEG_NOSREG):
                 raise Exception("couldn't add segment %s" % (name,))
-            if segname == 'code':
-                idaapi.autoMark(seg.startEA, AU_CODE)
             ea = seg.startEA
             for word in chunk:
                 idaapi.put_byte(ea, word)
                 ea += 1
+            if segname == 'code':
+                idaapi.autoMark(seg.startEA, AU_CODE)
         if segname == 'data':
             # fill in the remaining area with BSS
             spaces = zip([0] + [addr+len(chunk) for (addr, chunk) in info['chunks']],
@@ -104,6 +104,6 @@ def load_file(li, neflags, format):
                 seg.sel = kind + 1
                 name = 'bss_%x' % (start,)
                 #print '%s from %x to %x' % (name, seg.startEA, seg.endEA)
-                if not idaapi.add_segm_ex(seg, name, 'BSS', idaapi.ADDSEG_SPARSE):
+                if not idaapi.add_segm_ex(seg, name, 'BSS', idaapi.ADDSEG_SPARSE | ADDSEG_NOSREG):
                     raise Exception("couldn't add segment %s" % (name,))
     return 1
