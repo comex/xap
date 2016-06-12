@@ -267,7 +267,7 @@ class my_processor_t(idaapi.processor_t):
             ea = op.addr + (0x1000000 if op.type == o_mem else 0)
             if not out_name_expr(op, ea, BADADDR):
                 out_tagon(COLOR_ERROR)
-                OutLong(op.addr, 16)
+                OutLong(ea, 16)
                 out_tagoff(COLOR_ERROR)
                 QueueMark(Q_noName, cmd.ea)
         elif op.type == o_reg:

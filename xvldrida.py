@@ -91,7 +91,7 @@ def load_file(li, neflags, format):
         if segname == 'data':
             # fill in the remaining area with BSS
             spaces = zip([0] + [addr+len(chunk) for (addr, chunk) in info['chunks']],
-                         [addr for (addr, chunk) in info['chunks']][1:] + [0x10000])
+                         [addr for (addr, chunk) in info['chunks']] + [0x10000])
             for start, end in spaces:
                 if end == start:
                     continue
@@ -102,6 +102,7 @@ def load_file(li, neflags, format):
                 seg.bitness = 1
                 seg.sel = kind + 1
                 name = 'bss_%x' % (addr,)
+                print hex(start), hex(end)
                 if not idaapi.add_segm_ex(seg, name, 'BSS', idaapi.ADDSEG_SPARSE):
                     raise Exception("couldn't add segment %s" % (name,))
     return 1
