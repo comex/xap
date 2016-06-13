@@ -10,6 +10,7 @@ bcs
 bcz
 beq
 bge
+ble
 bgt
 blt
 bmi

@@ -1,4 +1,4 @@
-MODULE derp
+;MODULE derp
 .LARGE
 .CODE
     enter #4
@@ -7,7 +7,7 @@ MODULE derp
     leave #4
 
 
-    bra @H'DEADBEEF
+    ;bra @H'DEADBEEF
     bra @H'BEEF
     bra @H'1
     bsr @H'1
@@ -17,12 +17,12 @@ MODULE derp
 
     and x, #H'DEAD
     and x, #H'DEADBE
-    and x, #H'DEADBEEF
-    and x, #H'DEADBEEFEF
+    ;and x, #H'DEADBEEF
+    ;and x, #H'DEADBEEFEF
 
     bc2
-    bra2 (?L1)
-    bra3 (?L1)
+    ;bra2 (?L1)
+    ;bra3 (?L1)
     bra (?L1)
 
     blt (?L1)
@@ -80,12 +80,12 @@ MODULE derp
     sif
     bc
 
-    print y, @(0,y)
-    print x, @(0,y)
-    print x, @(0,x)
-    print x, #15
-    print x, @H'1
-
+    ;print y, @(0,y)
+;    print x, @(0,y)
+;    print x, @(0,x)
+;    print x, #15
+;    print x, @H'1
+;
 
     enterl #1
     enterl #H'f
