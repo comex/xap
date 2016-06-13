@@ -1,3 +1,10 @@
+#include <stdio.h>
+#include <regs.h>
+#include "cbit/htab.h"
+#include "cbit/vec.h"
+#include "cbit/str.h"
+#include "cbit/misc.h"
+
 /*
     pperf --prefix=insns -nul xas-tokens.txt
     pperf --prefix=regs -nul xas-regs.txt
@@ -6,6 +13,12 @@ static inline long insns_lookup(const char *, int);
 #include "insns.c"
 static inline long regs_lookup(const char *, int);
 #include "regs.c"
+
+enum {
+    MAX_REG_LEN = 5,
+    MAX_INSN_LEN = 6,
+    MAX_DOT_LEN = 4,
+};
 
 enum insn {
     insn_add, //
@@ -75,14 +88,14 @@ enum reg {
 #define unreachable() ensure(false)
 #define STR_FMT_ARG(s) (int) (s)->name.length, (s)->name.els
 
-enum seg { UNK_SEG, CODE_SEG, DATA_SEG };
+enum seg { CODE_SEG, DATA_SEG, UNK_SEG };
+enum { NUM_SEGS = 2 };
+
 struct sym {
     str name;
     enum seg seg;
-    union {
-        size_t code_chunk_idx;
-        uint16_t data_addr;
-    } u;
+    size_t chunk_idx;
+    int first_use_lineno;
 };
 
 static size_t str_hash(const str *s) {
@@ -98,27 +111,7 @@ static size_t str_hash(const str *s) {
 DECL_STATIC_HTAB_KEY(strp, str *, strp_hash, strp_eq, strp_null, 0)
 struct empty {};
 DECL_HTAB(sym, strp, struct empty);
-
-static inline bool
-is_local_sym_name(const str *name) {
-    char first = name->els[0];
-    return first == '?' || first == '^';
-}
-
-static inline struct sym *
-find_sym(struct as *as, const str *name) {
-    struct htab_sym *ht = is_local_sym_name(name) ? &as->local_symtab : &as->global_symtab;
-    struct htab_bucket_sym *bucket = htab_setbucket_sym(ht, &name);
-    if (!bucket->key) {
-        struct sym *sym = malloc(sizeof(*sym));
-        sym->name = *name;
-        sym->seg = UNK_SEG;
-        bucket->key = &sym->name;
-    }
-    return (struct sym *) bucket->key;
-}
-
-typedef struct htab_bucket_sym_data sym;
+DECL_VEC(struct sym *, symp);
 
 enum operator {
     OP_CONST, OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_SYM,
@@ -140,56 +133,104 @@ struct expr {
 }
 DECL_VEC(struct expr, expr);
 
-struct code_chunk {
+struct chunk {
+    int lineno;
     struct vec_uint16_t before;
-    uint32_t before_base_addr;
-    enum { RELOC_CHUNK, SYM_CHUNK } type;
-    struct {
-        uint8_t base;
-        struct expr target;
-    } reloc;
-};
-struct data_chunk {
-    struct vec_uint16_t data;
-    uint32_t base_addr;
-};
-struct data_reloc {
-    uint16_t from;
-    struct expr target;
+    enum {
+        CODE_RELOC_CHUNK,
+        DATA_RELOC_CHUNK,
+        SYM_CHUNK,
+        SWITCH_CHUNK,
+        ORG_CHUNK,
+    } type;
+    union {
+        struct {
+            uint8_t max_known_size;
+            uint8_t base;
+            struct expr target;
+        } reloc;
+        struct {
+            uint32_t last_known_addr;
+        } sym;
+        struct {
+            uint32_t addr;
+        } org;
+    } u;
 };
 DECL_VEC(uint16_t, uint16_t);
-DECL_VEC(struct code_chunk, code_chunk);
-DECL_VEC(struct data_reloc, data_reloc);
-DECL_VEC(struct data_chunk, data_chunk);
+DECL_VEC(struct chunk, chunk);
 
 struct as {
-    char *read_cursor, *read_end;
-    int lineno;
-    str input;
+    const char *read_cursor, *read_end;
+    const char *filename;
+    uint32_t lineno;
     enum seg seg;
+    bool have_err;
 
     struct htab_sym global_symtab, local_symtab;
+    struct vec_symp syms_to_free;
 
     struct vec_uint16_t cur;
-    uint32_t cur_base_addr;
 
-    struct vec_code_chunk code;
-    struct vec_data_chunk data;
-    struct vec_data_reloc data_relocs;
+    struct seg_info {
+        struct vec_chunk chunks;
+    } seg_info[2];
 };
 
-static void make_code_chunk(struct as *as) {
-    struct code_chunk *cc = vec_appendp(&as->code);
+static void err(struct as *as, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "ERROR [%s:%d]: ", as->filename, as->lineno);
+    vfprintf(stderr, fmt, ap);
+    fputc('\n', stderr);
+    va_end(ap);
+    as->have_err = true;
+}
+
+static void err_noline(struct as *as, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    fputc('\n', stderr);
+    va_end(ap);
+    as->have_err = true;
+}
+
+static inline bool
+is_local_sym_name(const str *name) {
+    char first = name->els[0];
+    return first == '?' || first == '^';
+}
+
+static inline struct sym *
+find_sym(struct as *as, const str *name, bool local) {
+    struct htab_sym *ht = local ? &as->local_symtab : &as->global_symtab;
+    struct htab_bucket_sym *bucket = htab_setbucket_sym(ht, &name);
+    if (!bucket->key) {
+        struct sym *sym = malloc(sizeof(*sym));
+        sym->name = *name;
+        sym->seg = UNK_SEG;
+        sym->first_use_lineno = as->lineno;
+        bucket->key = &sym->name;
+    }
+    return (struct sym *) bucket->key;
+}
+
+
+static struct chunk *make_chunk(struct as *as) {
+    struct chunk *cc = vec_appendp(&as->seg_info[as->seg].chunks);
+    cc->lineno = as->lineno;
     cc->before = as->cur;
-    cc->before_base_addr = as->cur_base_addr;
     VEC_INIT(&as->cur);
+    return cc;
 }
 
 static void emit_code_with_ref(struct as *as, uint8_t base, struct expr ref) {
-    struct code_chunk *cc = make_code_chunk(as);
-    cc->type = RELOC_CHUNK;
-    cc->reloc.base = base;
-    cc->reloc.target = ref;
+    struct chunk *cc = make_chunk(as);
+    cc->type = CODE_RELOC_CHUNK;
+    cc->u.reloc.base = base;
+    cc->u.reloc.max_known_size = 1;
+    cc->u.reloc.target = ref;
 }
 
 static void emit_code(struct as *as, uint16_t code) {
@@ -316,13 +357,46 @@ static void skip_white(struct as *as) {
     }
 }
 
+static str read_token(struct as *as) {
+    str it = str_borrow(as->read_cursor, 0);
+    while (1) {
+        char c = peek(as);
+        switch (c) {
+            case ' ':
+            case '\t':
+            case '\n':
+            case '\0':
+            case ',':
+            case '(': case ')':
+            case '+': case '-': case '*': case '/':
+            case '-':
+                goto end;
+            case '\\':
+                advance(as);
+                if (peek(as) == '\n') {
+                    as->read_cursor--;
+                    goto end;
+                }
+                it.length++;
+                break;
+
+            default:
+                advance(as);
+                it.length++;
+                break;
+        }
+    }
+end:
+    skip_white(as);
+    return it;
+}
+
 static void clear_symtab(struct htab_sym *ht) {
     htab_free_storage_sym(ht);
 }
 
 static bool parse_reg(struct as *as, enum reg *regp) {
     str tok = read_token(as);
-    skip_white(as);
     if (tok.length == 0) {
         err(as, "unexpected character");
         return false;
@@ -341,6 +415,20 @@ static bool parse_reg(struct as *as, enum reg *regp) {
     }
     *regp = (enum reg) which;
     return true;
+}
+
+static void expr_free(struct expr *expr) {
+    switch (expr->op) {
+        case OP_ADD:
+        case OP_SUB:
+        case OP_MUL:
+        case OP_DIV:
+            expr_free(expr->u.bin.l);
+            free(expr->u.bin.l);
+            expr_free(expr->u.bin.r);
+            free(expr->u.bin.r);
+            break;
+    }
 }
 
 static bool parse_expr(struct as *as, bool *is_indexed_p, enum reg *regp, struct expr *indexp) {
@@ -446,8 +534,7 @@ static bool parse_expr(struct as *as, bool *is_indexed_p, enum reg *regp, struct
 
             default: {
                 str tok = read_token(as);
-                skip_white(as);
-                struct sym *sym = find_sym(as, &tok);
+                struct sym *sym = find_sym(as, &tok, is_local_sym_name(&tok));
                 struct expr e = {
                     .op = OP_SYM,
                     .u.sym = sym,
@@ -477,11 +564,15 @@ static bool parse_expr(struct as *as, bool *is_indexed_p, enum reg *regp, struct
         while (output.length >= 2)
             POP_EXPR(opers.els[opers.length - 1]);
         *indexp = opers.els[0];
+        opers.length = 0;
         ret = true;
         goto end;
     }
 end:
+    skip_line(as);
     vec_free_storage_operator(&opers);
+    VEC_FOREACH(&output, size_t i, struct expr *expr)
+        expr_free(expr);
     vec_free_storage_expr(&output);
     return ret;
 #undef PARSE_EXPR
@@ -500,6 +591,7 @@ static void handle_data_op(struct as *as, uint8_t base, bool no_imm) {
         if (is_indexed) {
             if (reg != reg_x && reg != reg_y) {
                 err(as, "indexed arg base reg must be x or y");
+                expr_free(&index);
                 return;
             }
             base |= reg == reg_x ? 2 : 3;
@@ -515,6 +607,7 @@ static void handle_data_op(struct as *as, uint8_t base, bool no_imm) {
             return;
         if (is_indexed) {
             err(as, "can't have indexed immediate");
+            expr_free(&index);
             return;
         }
         emit_code_with_ref(as, base | 0, imm);
@@ -540,7 +633,7 @@ static void handle_data_op(struct as *as, uint8_t base, bool no_imm) {
     }
 }
 
-static bool parse_insn(struct as *as, str *tok) {
+static void parse_insn(struct as *as, str *tok) {
     if (tok.length > MAX_INSN_LEN)
         goto unknown_insn;
     char insn[MAX_INSN_LEN+1];
@@ -662,43 +755,343 @@ bad:
     skip_line(as);
 }
 
-static bool parse_neutral(struct as *as) {
+static void switch_seg(struct as *as, enum seg seg) {
+    if (as->seg != UNK_SEG) {
+        struct chunk *cc = make_chunk(as);
+        cc->type = SWITCH_CHUNK;
+    }
+    ensure(seg != UNK_SEG);
+    as->seg = seg;
+}
+static uint32_t max_addr_in_seg(enum seg seg) {
+    return seg == CODE_SEG ? 0x1000000 : 0x10000;
+}
+
+static void parse_dot(struct as *as) {
+    str tok = read_token(as);
+    char buf[11];
+    if (tok.length > MAX_DOT_LEN) {
+        buf[0] = 0;
+    } else {
+        memcpy(buf, tok.els, tok.length);
+        buf[tok.length] = 0;
+    }
+    if (!strcasecmp(buf, "code")) {
+        switch_seg(as, SEG_CODE);
+    } else if (!strcasecmp(buf, "data")) {
+        switch_seg(as, SEG_DATA);
+    } else if (!strcasecmp(buf, "org")) {
+        if (as->seg == UNK_SEG)
+            goto unk_not_ok;
+        bool is_indexed;
+        enum reg reg;
+        struct expr addy;
+        if (!parse_expr(as, &is_indexed, &reg, &addy))
+            return;
+        if (is_indexed || addy.op != OP_CONST) {
+            err(as, "bad .ORG address expression");
+            free_expr(&addy);
+            return;
+        }
+        int32_t k = addy.u.k;
+        if (k < 0 || k >= max_addr_in_seg(as->seg)) {
+            err(as, ".ORG address out of range");
+            return;
+        }
+        struct chunk *cc = make_chunk(as);
+        cc->type = ORG_CHUNK;
+        cc->u.org.addr = (uint32_t) k;
+    } else {
+        err(as, "unknown directive: %.*s", STR_FMT_ARG(&tok));
+    }
+    return;
+
+unk_not_ok:
+    err(as, "got '%s' directive without .CODE or .DATA", but);
+    skip_line(as);
+    return;
+}
+
+static void free_symtab(struct as *as, struct htab_sym *ht) {
+    HTAB_FOREACH(ht, str **sp, struct empty *ep, sym) {
+        struct sym *sym = (struct sym *) *sp;
+        if (sym->seg == UNK_SEG) {
+            err_noline(as, "ERROR [%s:%d]: undefined symbol '%s'\n",
+                       as->filename, sym->first_use_lineno);
+        }
+        vec_append_symp(&as->syms_to_free, sym);
+    }
+    htab_free_storage(ht);
+}
+
+static void parse_neutral(struct as *as) {
     enum seg seg = as->seg;
     skip_white(as);
     char c = peek(as);
     if (c == '.') {
         parse_dot(as);
-        return true;
+        return;
     }
     if (c == '\0')
-        return false;
+        return;
     if (seg == UNK_SEG) {
         err(as, "got stuff without .CODE or .DATA");
         skip_line(as);
-        return true;
+        return;
     }
     str tok = read_token(as);
-    skip_white(as);
     if (peek(as) == ':') {
-        struct sym *sym = find_sym(as, &tok);
+        bool local = is_local_sym_name(&tok);
+        if (!local && as->local_symtab.length > 0) {
+            free_symtab(as, &as->local_symtab);
+            HTAB_INIT(&as->local_symtab);
+        }
+        struct sym *sym = find_sym(as, &tok, local);
         if (sym->seg != UNK_SEG) {
             err("ignoring duplicate definition of symbol %.*s",
                 STR_FMT_ARG(&sym->name));
         } else {
             sym->seg = seg;
-            if (seg == CODE_SEG) {
-                struct code_chunk *cc = make_code_chunk(as);
-                cc->type = SYM_CHUNK;
-                sym->u.code_chunk_idx = as->code_chunks.length;
-            } else {
-                sym->u.data_addr = as->data.length;
-            }
+            sym->chunk_idx = as->chunks.length;
+            struct chunk *ch = make_chunk(as);
+            ch->type = SYM_CHUNK;
+            ch->u.sym.last_known_addr = -1u;
         }
         if (is_local_sym_name(&tok))
             clear_symtab(as->local_sym);
-        return true;
+        return;
     }
 
     // ok, it's an instruction (or pseudo)
-    return parse_insn(as, &tok);
+    parse_insn(as, &tok);
+}
+
+static void parse_all(struct as *as) {
+    char c = peek(as);
+    if (c != '\0')
+    while (1) {
+        parse_neutral(as);
+        c = peek(as);
+        if (c == '\0')
+            break;
+        if (c != '\n') {
+            char *nl = memchr(as->read_cursor, '\n', as->read_end - as->read_cursor);
+            if (!nl)
+                nl = as->read_end;
+            err(as, "extraneous data at end of line: '%.*s'",
+                (int) (nl - as->read_cursor), as->read_cursor);
+            skip_line(as);
+            if (c == '\0')
+                break;
+        }
+        advance(as);
+        as->lineno++;
+    }
+}
+
+static bool expr_eval(struct as *as, const struct expr *expr, int32_t *out) {
+    switch (expr->op) {
+        case OP_CONST:
+            *out = expr->u.k;
+            return true;
+        case OP_SYM: {
+            struct sym *sym = expr->u.sym;
+            struct seg seg = sym->seg;
+            if (seg == UNK_SEG) {
+                // hopeless, already diagnosed
+                *out = 0;
+                return true;
+            }
+            size_t idx = sym->chunk_idx;
+            struct chunk *chunk = &as->seg_info[seg].chunks.els[idx];
+            ensure(chunk->type == SYM_CHUNK);
+            uint32_t val = chunk->u.sym.last_known_addr;
+            if (val == -1u)
+                return false;
+            ensure(val <= INT32_MAX);
+            *out = (int32_t) val;
+            return true;
+        }
+    }
+    // binary
+    int32_t l, r;
+    if (!expr_eval(as, expr->u.bin.l, &l) ||
+        !expr_eval(as, expr->u.bin.r, &r))
+        return false;
+    *out = (int32_t) ((uint32_t) l + (uint32_t) r);
+    return true;
+}
+
+static void layout(struct as *as) {
+    free_symtab(as, &as->global_symtab);
+    bool need_again;
+    do {
+        need_again = false;
+        for (int seg = 0; seg < NUM_SEGS; seg++) {
+            struct seg_info *si = &as->seg_info[seg];
+            uint32_t addr = 0;
+            uint32_t max = max_addr_in_seg(seg);
+            VEC_FOREACH(&si->chunks, size_t i, struct chunk *chunk, chunk) {
+                size_t length = chunk->before.length, length2;
+                switch (chunk->type) {
+                    case CODE_RELOC_CHUNK: {
+                        int32_t dest;
+                        uint8_t *mks = &chunk->u.reloc.max_known_size;
+                        if (expr_eval(as, &chunk->u.reloc.target, &dest)) {
+                            uint32_t diff = addr - (uint32_t) dest;
+                            uint8_t size = diff == (uint32_t) (int8_t) diff ? 1
+                                         : diff == (uint32_t) (int16_t) diff ? 2
+                                         : 3;
+                            if (size > *mks) {
+                                need_again = true;
+                                *mks = size;
+                            }
+                        } else
+                            need_again = true;
+                        length2 = *mks;
+                        break;
+                    }
+                    case DATA_RELOC_CHUNK:
+                        length2 = 2;
+                        break;
+                    case SYM_CHUNK:
+                        chunk->sym.last_known_addr = addr;
+                        /* fallthrough */
+                    default:
+                        length2 = 0;
+                        break;
+                }
+                size_t total_length = length + length2;
+                if (total_length < length ||
+                    total_length > max - addr) {
+                    err_noline(as, "ERROR: ran out of segment space around %s:%d",
+                               as->filename, chunk->lineno);
+                    return;
+                }
+                if (chunk->type == ORG_CHUNK)
+                    addr = chunk->u.org.addr;
+                else
+                    addr += total_length;
+            }
+        }
+    } while(need_again);
+}
+
+static void write_word(FILE *out, uint32_t addr, uint16_t word) {
+    fprintf(out, "@%06x\t%02x\n", addr, word);
+}
+
+static void emit_txt(const struct as *as, enum seg seg, FILE *out, char **argv) {
+    fprintf(out, "// Version      : xas\n");
+    fprintf(out, "// Title        : \"%s Table\"\n",
+            seg == CODE_SEG ? "Code" : "Constant");
+    char buf[128];
+    struct timeval tv = 0};
+    gettimeofday(&tv, NULL); // or fail, whatever
+    fprintf(out, "// Date         : %s\n",
+            ctime_r(&tv.tv_sec, buf));
+    fprintf(out, "// Command Line :");
+    for (char **arg = argv; *arg; arg++)
+        fprintf(out, " %s", *arg);
+    fprintf(out, "\n\n");
+    const struct seg_info *si = &as->seg_info[seg];
+    uint32_t addr = 0;
+    VEC_FOREACH(&si->chunks, size_t i, struct chunk *chunk, chunk) {
+        VEC_FOREACH(&chunk->before, size_t j, uint16_t *word)
+            write_word(out, addr++, *word);
+        switch (chunk->type) {
+            case CODE_RELOC_CHUNK: {
+                int32_t dest;
+                ensure (expr_eval(as, &chunk->u.reloc.target, &dest));
+                int32_t diff = (int32_t) (addr - (uint32_t) dest);
+                int8_t byte3 = (int8_t) (diff & 0xff);
+                int16_t byte2 = (int16_t) ((diff - byte3) & 0xffff);
+                int32_t byte1 = diff - (byte2 + byte3);
+                ensure((byte1 & 0xffff) == 0 && (byte2 & 0xff) == 0);
+                ensure(byte1 >= -0x800000 && byte1 <= 0x7f0000);
+                uint8_t len = chunk->u.reloc.max_known_size;
+                if (len >= 3)
+                    write_word(out, addr++, byte1 >> 8);
+                if (len >= 2)
+                    write_word(out, addr++, byte2);
+                len++;
+                write_word(out, addr++, byte3 << 8 | chunk->u.reloc.base);
+                break;
+            }
+            case DATA_RELOC_CHUNK: {
+                int32_t dest;
+                ensure (expr_eval(as, &chunk->u.reloc.target, &dest));
+                if (dest < -0x8000 || dest > 0xffff) {
+                    err_noline(as, "ERROR: reloc from %s:%d evaluates to %ld which can't fit as either signed or unsigned",
+                               as->filename, chunk->lineno, (long) dest);
+                }
+                write_word(out, addr++, (uint16_t) dest);
+                break;
+            }
+            case ORG_CHUNK:
+                addr = chunk->u.org.addr;
+                break;
+        }
+    }
+}
+
+static void as_init(struct as *as, const char *read_cursor,
+                    const char *read_end, const char *filename) {
+    as->read_cursor = read_cursor;
+    as->read_end = read_end;
+    as->filename = filename;
+    as->lineno = 1;
+    as->seg = UNK_SEG;
+    as->have_err = false;
+    HTAB_INIT(&as->global_symtab);
+    HTAB_INIT(&as->local_symtab);
+    VEC_INIT(&as->syms_to_free);
+    VEC_INIT(&as->cur);
+    for (int i = 0; i < NUM_SEGS; i++)
+        VEC_INIT(&as->seg_info[i].chunks);
+}
+
+static void as_free(struct as *as) {
+    htab_free_storage_sym(&as->global_symtab);
+    htab_free_storage_sym(&as->local_symtab);
+    VEC_FOREACH(&as->syms_to_free, size_t i, struct sym **symp)
+        free(*symp);
+    vec_free_storage_symp(&as->syms_to_free);
+    vec_free_storage_uint16_t(&as->cur);
+    for (int i = 0; i < NUM_SEGS; i++) {
+        struct seg_info *si = &as->seg_info[seg];
+        VEC_FOREACH(&si->chunks, size_t i, struct chunk *chunk, chunk) {
+            if (chunk->type == CODE_RELOC_CHUNK ||
+                chunk->type == DATA_RELOC_CHUNK)
+                expr_free(&chunk->u.reloc.target);
+        }
+        vec_free_storage_uint16_t(&si->chunks);
+    }
+}
+
+int main(int argc, char **argv) {
+    str text = STR_INITER;
+    str_fread(&text, stdin, SIZE_MAX);
+    if (ferror(stdin)) {
+        fprintf(stderr, "read error\n");
+        return 1;
+    }
+    if (!feof(stdin)) {
+        fprintf(stderr, "input is too big for me\n");
+        return 1;
+    }
+    struct as as;
+    as_init(&as, text.els, text.els + text.length, "<stdin>");
+    parse_all(&as);
+    if (as.have_err)
+        return 1;
+    layout(&as);
+    if (as.have_err)
+        return 1;
+    if (as.seg_info[CODE_SEG].chunks.length)
+        emit_txt(&as, CODE_SEG, stdout, argv);
+    if (as.seg_info[DATA_SEG].chunks.length)
+        emit_txt(&as, DATA_SEG, stdout, argv);
+
+    as_free(as); // unnecessary but just to test it
 }
