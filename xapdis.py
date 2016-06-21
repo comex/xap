@@ -1,4 +1,4 @@
-import sys, re
+import sys, re, struct
 from collections import namedtuple
 
 # https://github.com/lorf/csrremote/blob/master/bc_def.h
@@ -236,20 +236,35 @@ if __name__ == '__main__':
     next_disp_addr = 0
     ds = DisassemblerState()
     fp = open(sys.argv[1]) if len(sys.argv) > 1 else sys.stdin
-    for line in fp:
-        line = re.sub('//.*', '', line).strip()
-        if not line:
-            continue
-        m = re.match('^@([0-9a-fA-F]+)\s+([0-9a-fA-F]{4})$', line)
-        assert m
-        addr, val = [int(x, 16) for x in m.groups()]
-        if cur_addr is None:
-            cur_addr = addr
-        assert addr == cur_addr
-        cur_addr += 1
+    textmode = True
+    if textmode:
+        for line in fp:
+            line = re.sub('//.*', '', line).strip()
+            if not line:
+                continue
+            m = re.match('^@([0-9a-fA-F]+)\s+([0-9a-fA-F]{4})$', line)
+            assert m
+            addr, val = [int(x, 16) for x in m.groups()]
+            if cur_addr is None:
+                cur_addr = addr
+            assert addr == cur_addr
+            cur_addr += 1
 
-        info = ds.dis(val, addr)
-        if info is not None:
-            addr, insn = info
-            print 'addr:%04x insn:%04x %s' % (next_disp_addr, val, dis_to_string(insn))
-            next_disp_addr = addr + 1
+            info = ds.dis(val, addr)
+            if info is not None:
+                addr, insn = info
+                print 'addr:%04x insn:%04x %s' % (next_disp_addr, val, dis_to_string(insn))
+                next_disp_addr = addr + 1
+    else:
+        addr = 0
+        #fp.read(11)
+        while True:
+            data = fp.read(2)
+            if len(data) < 2:
+                break
+            val = struct.unpack('<H', data)[0]
+            info = ds.dis(val, addr)
+            addr += 1
+            if info is not None:
+                xaddr, insn = info
+                print 'addr:%04x/%04x insn:%04x %s' % (xaddr, xaddr * 2, val, dis_to_string(insn))

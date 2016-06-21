@@ -1,4 +1,4 @@
-;MODULE derp
+MODULE derp
 .LARGE
 .CODE
     enter #4
